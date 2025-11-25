@@ -12,6 +12,7 @@ require_once __DIR__ . '/WGDashboard.php';
 require_once __DIR__ . '/s_ui.php';
 require_once __DIR__ . '/ibsng.php';
 require_once __DIR__ . '/mikrotik.php';
+require_once __DIR__ . '/falco.php';
 
 class ManagePanel
 {
@@ -368,6 +369,51 @@ class ManagePanel
                 $Output['username'] = $usernameC;
                 $Output['subscription_url'] = $password;
                 $Output['configs'] = [];
+            }
+        } elseif ($Get_Data_Panel['type'] == "falco") {
+            // Falco panel integration
+            $panel_id = isset($Get_Data_Panel['inboundid']) ? intval($Get_Data_Panel['inboundid']) : 1;
+            // Convert data_limit from bytes to GB
+            $traffic_limit_gb = $data_limit > 0 ? intval($data_limit / pow(1024, 3)) : 0;
+            // Calculate expires_days from timestamp
+            if ($expire == 0) {
+                $expires_days = 0;
+            } else {
+                $expires_days = max(1, intval(($expire - time()) / 86400));
+            }
+            $comment = $note;
+            
+            $ConnectToPanel = createFalcoConfig($Get_Data_Panel['name_panel'], $panel_id, $traffic_limit_gb, $expires_days, $comment);
+            
+            if (!empty($ConnectToPanel['error'])) {
+                return array(
+                    'status' => 'Unsuccessful',
+                    'msg' => $ConnectToPanel['error']
+                );
+            }
+            if (!empty($ConnectToPanel['status']) && $ConnectToPanel['status'] != 200 && $ConnectToPanel['status'] != 201) {
+                return array(
+                    'status' => 'Unsuccessful',
+                    'msg' => 'HTTP Error: ' . $ConnectToPanel['status']
+                );
+            }
+            
+            $data_Output = json_decode($ConnectToPanel['body'], true);
+            if (isset($data_Output['detail']) && $data_Output['detail']) {
+                $Output['status'] = 'Unsuccessful';
+                $Output['msg'] = $data_Output['detail'];
+            } else {
+                $subscription_url = isset($data_Output['subscription_url']) ? $data_Output['subscription_url'] : '';
+                if (!preg_match('/^(https?:\/\/)?([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(:\d+)?((\/[^\s\/]+)+)?$/', $subscription_url)) {
+                    $subscription_url = $Get_Data_Panel['url_panel'] . "/" . ltrim($subscription_url, "/");
+                }
+                $Output['status'] = 'successful';
+                $Output['username'] = isset($data_Output['name']) ? $data_Output['name'] : $usernameC;
+                $Output['subscription_url'] = $subscription_url;
+                $Output['configs'] = isset($data_Output['links']) ? $data_Output['links'] : [];
+                if ($inoice != false) {
+                    $Output['subscription_url'] = "https://$domainhosts/sub/" . $inoice['id_invoice'];
+                }
             }
         } else {
             $Output['status'] = 'Unsuccessful';
@@ -870,6 +916,93 @@ class ManagePanel
                     'sub_last_user_agent' => null,
                 );
             }
+        } elseif ($Get_Data_Panel['type'] == "falco") {
+            $UsernameData = getFalcoConfig($Get_Data_Panel['name_panel'], $username);
+            if (!empty($UsernameData['error'])) {
+                $Output = array(
+                    'status' => 'Unsuccessful',
+                    'msg' => $UsernameData['error']
+                );
+            } elseif (!empty($UsernameData['status']) && $UsernameData['status'] != 200) {
+                $Output = array(
+                    'status' => 'Unsuccessful',
+                    'msg' => 'HTTP Error: ' . $UsernameData['status']
+                );
+            } else {
+                $UsernameData = json_decode($UsernameData['body'], true);
+                if (isset($UsernameData['detail']) && $UsernameData['detail']) {
+                    $Output = array(
+                        'status' => 'Unsuccessful',
+                        'msg' => $UsernameData['detail']
+                    );
+                } elseif (!isset($UsernameData['name'])) {
+                    $Output = array(
+                        'status' => 'Unsuccessful',
+                        'msg' => "Config not found"
+                    );
+                } else {
+                    // Parse Falco config data
+                    $subscription_url = isset($UsernameData['subscription_url']) ? $UsernameData['subscription_url'] : '';
+                    if (!preg_match('/^(https?:\/\/)?([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(:\d+)?((\/[^\s\/]+)+)?$/', $subscription_url)) {
+                        $subscription_url = $Get_Data_Panel['url_panel'] . "/" . ltrim($subscription_url, "/");
+                    }
+                    
+                    // Map status
+                    $status = isset($UsernameData['status']) ? $UsernameData['status'] : 'active';
+                    
+                    // Convert traffic_limit_gb to bytes if needed
+                    $data_limit = 0;
+                    if (isset($UsernameData['traffic_limit_bytes'])) {
+                        $data_limit = $UsernameData['traffic_limit_bytes'];
+                    } elseif (isset($UsernameData['traffic_limit_gb'])) {
+                        $data_limit = $UsernameData['traffic_limit_gb'] * pow(1024, 3);
+                    }
+                    
+                    // Convert usage to bytes
+                    $used_traffic = 0;
+                    if (isset($UsernameData['usage_bytes'])) {
+                        $used_traffic = $UsernameData['usage_bytes'];
+                    } elseif (isset($UsernameData['usage_gb'])) {
+                        $used_traffic = $UsernameData['usage_gb'] * pow(1024, 3);
+                    }
+                    
+                    // Parse expiration time
+                    $expire = 0;
+                    if (isset($UsernameData['expires_at']) && $UsernameData['expires_at']) {
+                        $expire = strtotime($UsernameData['expires_at']);
+                    }
+                    
+                    // Determine status based on limits
+                    if (!isset($UsernameData['enabled']) || !$UsernameData['enabled']) {
+                        $status = "disabled";
+                    }
+                    if ($expire > 0 && $expire - time() <= 0) {
+                        $status = "expired";
+                    }
+                    if ($data_limit > 0 && ($data_limit - $used_traffic <= 0)) {
+                        $status = "limited";
+                    }
+                    
+                    $links = isset($UsernameData['links']) ? $UsernameData['links'] : [];
+                    if ($inoice != false) {
+                        $subscription_url = "https://$domainhosts/sub/" . $inoice['id_invoice'];
+                    }
+                    
+                    $Output = array(
+                        'status' => $status,
+                        'username' => $UsernameData['name'],
+                        'data_limit' => $data_limit,
+                        'expire' => $expire,
+                        'online_at' => isset($UsernameData['online_at']) ? $UsernameData['online_at'] : null,
+                        'used_traffic' => $used_traffic,
+                        'links' => $links,
+                        'subscription_url' => $subscription_url,
+                        'sub_updated_at' => isset($UsernameData['sub_updated_at']) ? $UsernameData['sub_updated_at'] : null,
+                        'sub_last_user_agent' => isset($UsernameData['sub_last_user_agent']) ? $UsernameData['sub_last_user_agent'] : null,
+                        'uuid' => isset($UsernameData['uuid']) ? $UsernameData['uuid'] : null
+                    );
+                }
+            }
         } else {
             $Output = array(
                 'status' => 'Unsuccessful',
@@ -1071,6 +1204,23 @@ class ManagePanel
                     'subscription_url' => $url_sub,
                 );
             }
+        } elseif ($Get_Data_Panel['type'] == "falco") {
+            // Falco panel doesn't have a separate revoke_sub endpoint
+            // Regenerate subscription by updating config
+            $config = new ManagePanel();
+            $Data_User = $config->DataUser($name_panel, $username);
+            if ($Data_User['status'] == 'Unsuccessful') {
+                $Output = array(
+                    'status' => 'Unsuccessful',
+                    'msg' => isset($Data_User['msg']) ? $Data_User['msg'] : 'Error getting user data'
+                );
+            } else {
+                $Output = array(
+                    'status' => 'successful',
+                    'configs' => $Data_User['links'],
+                    'subscription_url' => $Data_User['subscription_url']
+                );
+            }
         } else {
             $Output = array(
                 'status' => 'Unsuccessful',
@@ -1220,6 +1370,24 @@ class ManagePanel
                 );
             } else {
                 deleteUser_mikrotik($Get_Data_Panel['name_panel'], $UsernameData['.id']);
+                $Output = array(
+                    'status' => 'successful',
+                    'username' => $username,
+                );
+            }
+        } elseif ($Get_Data_Panel['type'] == "falco") {
+            $UsernameData = deleteFalcoConfig($Get_Data_Panel['name_panel'], $username);
+            if (!empty($UsernameData['error'])) {
+                $Output = array(
+                    'status' => 'Unsuccessful',
+                    'msg' => $UsernameData['error']
+                );
+            } elseif (!empty($UsernameData['status']) && $UsernameData['status'] != 200 && $UsernameData['status'] != 204) {
+                $Output = array(
+                    'status' => 'Unsuccessful',
+                    'msg' => 'HTTP Error: ' . $UsernameData['status']
+                );
+            } else {
                 $Output = array(
                     'status' => 'successful',
                     'username' => $username,
@@ -1486,6 +1654,31 @@ class ManagePanel
                 'status' => true,
                 'data' => $modify
             );
+        } elseif ($Get_Data_Panel['type'] == "falco") {
+            $modify = updateFalcoConfig($name_panel, $username, $config);
+            if (!empty($modify['error'])) {
+                return array(
+                    'status' => false,
+                    'msg' => $modify['error']
+                );
+            } elseif (!empty($modify['status']) && $modify['status'] != 200) {
+                return array(
+                    'status' => false,
+                    'msg' => 'error code : ' . $modify['status']
+                );
+            }
+            $modifycheck = json_decode($modify['body'], true);
+            if (!empty($modifycheck['detail'])) {
+                return array(
+                    'status' => false,
+                    'msg' => $modifycheck['detail']
+                );
+            }
+            return array(
+                'status' => true,
+                'data' => $modify,
+                'remote_sync' => isset($modifycheck['remote_sync']) ? $modifycheck['remote_sync'] : null
+            );
         }
     }
     function Change_status($username, $name_panel)
@@ -1581,6 +1774,18 @@ class ManagePanel
                 $status = true;
             }
             $configs = array("enable" => $status);
+            $ManagePanel->Modifyuser($username, $name_panel, $configs);
+            $Output = array(
+                'status' => 'successful',
+                'msg' => null
+            );
+        } elseif ($Get_Data_Panel['type'] == "falco") {
+            if ($DataUserOut['status'] == "active") {
+                $status = "disabled";
+            } else {
+                $status = "active";
+            }
+            $configs = array("status" => $status);
             $ManagePanel->Modifyuser($username, $name_panel, $configs);
             $Output = array(
                 'status' => 'successful',
@@ -1723,6 +1928,24 @@ class ManagePanel
             ResetUserDataUsages_ui($username, $name_panel);
             return array(
                 'status' => true
+            );
+        } elseif ($panel['type'] == "falco") {
+            // Reset usage by updating config with reset_usage flag
+            $reset = updateFalcoConfig($panel['name_panel'], $username, array('reset_usage' => true));
+            if (!empty($reset['status']) && $reset['status'] != 200) {
+                return array(
+                    'status' => false,
+                    'msg' => 'error code : ' . $reset['status']
+                );
+            } elseif (!empty($reset['error'])) {
+                return array(
+                    'status' => false,
+                    'msg' => 'error  : ' . $reset['error']
+                );
+            }
+            return array(
+                'status' => true,
+                'msg' => 'successful'
             );
         }
     }
@@ -1913,6 +2136,16 @@ class ManagePanel
                 "volume" => $data_limit_new,
                 "expiry" => $time_new
             );
+        } elseif ($panel['type'] == "falco") {
+            // Convert data_limit from bytes to GB
+            $traffic_limit_gb = $data_limit_new > 0 ? intval($data_limit_new / pow(1024, 3)) : 0;
+            // Convert timestamp to ISO8601 format
+            $expires_at = $time_new > 0 ? date('c', $time_new) : null;
+            $data = array(
+                'traffic_limit_gb' => $traffic_limit_gb,
+                'expires_at' => $expires_at,
+                'status' => 'active'
+            );
         }
         $extend = $this->Modifyuser($username, $panel['name_panel'], $data);
         if ($extend['status'] == false) {
@@ -2025,6 +2258,12 @@ class ManagePanel
         } elseif ($panel['type'] == "s_ui") {
             $data = array(
                 "volume" => $new_limit,
+            );
+        } elseif ($panel['type'] == "falco") {
+            // Convert new_limit from bytes to GB
+            $traffic_limit_gb = $new_limit > 0 ? intval($new_limit / pow(1024, 3)) : 0;
+            $data = array(
+                'traffic_limit_gb' => $traffic_limit_gb,
             );
         }
         $extra_volume = $this->Modifyuser($username_account, $panel['name_panel'], $data);
@@ -2143,6 +2382,12 @@ class ManagePanel
         } elseif ($panel['type'] == "s_ui") {
             $data = array(
                 "expiry" => $new_limit,
+            );
+        } elseif ($panel['type'] == "falco") {
+            // Convert timestamp to ISO8601 format
+            $expires_at = $new_limit > 0 ? date('c', $new_limit) : null;
+            $data = array(
+                'expires_at' => $expires_at,
             );
         }
         $extra_time = $this->Modifyuser($username_account, $panel['name_panel'], $data);
