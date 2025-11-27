@@ -19,6 +19,11 @@
 class ApiFailureLogger
 {
     /**
+     * Truncation suffix for long strings
+     */
+    private const TRUNCATION_SUFFIX = '... [TRUNCATED]';
+
+    /**
      * Sensitive fields to sanitize in logs
      */
     private static $sensitiveFields = [
@@ -129,7 +134,7 @@ class ApiFailureLogger
         // Truncate response body if too long
         $responseBody = $params['response_body'] ?? null;
         if ($responseBody !== null && strlen($responseBody) > self::$defaultConfig['max_response_length']) {
-            $responseBody = substr($responseBody, 0, self::$defaultConfig['max_response_length']) . '... [TRUNCATED]';
+            $responseBody = substr($responseBody, 0, self::$defaultConfig['max_response_length']) . self::TRUNCATION_SUFFIX;
         }
         
         return [
@@ -216,7 +221,7 @@ class ApiFailureLogger
     {
         $maxLength = 1000;
         if (strlen($trace) > $maxLength) {
-            return substr($trace, 0, $maxLength) . "\n... [TRUNCATED]";
+            return substr($trace, 0, $maxLength) . "\n" . self::TRUNCATION_SUFFIX;
         }
         return $trace;
     }

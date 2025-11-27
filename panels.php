@@ -1,6 +1,7 @@
 <?php
 ini_set('error_log', 'error_log');
 require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/ApiFailureLogger.php';
 require_once __DIR__ . '/Marzban.php';
 require_once __DIR__ . '/function.php';
 require_once __DIR__ . '/x-ui_single.php';
