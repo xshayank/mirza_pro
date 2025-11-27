@@ -155,3 +155,114 @@ To run the Falco panel tests:
 ```bash
 php tests/test_falco.php
 ```
+
+To run the API Failure Logger tests:
+
+```bash
+php tests/test_api_failure_logger.php
+```
+
+---
+
+## 🔔 API Failure Logging and Admin Alerts
+
+This project includes a centralized logging system for all external API failures. When any panel API request fails (non-2xx responses or network errors), the system:
+
+1. **Logs detailed error information** to the Apache error log (via `error_log()`)
+2. **Sends admin alerts** via Telegram to notify administrators immediately
+
+### Log Location
+
+API failure logs appear in your Apache error log file. Common locations:
+- Ubuntu/Debian: `/var/log/apache2/error.log`
+- CentOS/RHEL: `/var/log/httpd/error_log`
+- Custom: Check `ErrorLog` directive in your Apache configuration
+
+Logs are prefixed with `[API_FAILURE]` and contain JSON-formatted details:
+```json
+{
+  "type": "API_FAILURE",
+  "timestamp": "2024-01-15 10:30:45",
+  "method": "POST",
+  "url": "https://panel.example.com/api/users",
+  "http_status": 500,
+  "panel_name": "my_panel",
+  "user_id": 12345
+}
+```
+
+### Admin Alert Configuration
+
+Admin alerts are sent via Telegram to:
+1. The main admin number configured in `config.php` (`$adminnumber`)
+2. The Channel_Report configured in database settings
+3. Error reports go to the `errorreport` topic if configured in `topicid` table
+
+### Throttling
+
+To prevent alert spam during outages, alerts for the same endpoint are throttled to one per minute by default.
+
+### Sensitive Data Protection
+
+The logger automatically sanitizes sensitive fields before logging:
+- Passwords (`password`, `passwd`, `pass`)
+- Tokens (`token`, `access_token`, `refresh_token`, `bearer`)
+- API keys (`api_key`, `apikey`, `secret`, `secret_code`)
+- Authorization headers
+
+### User-Facing Error Messages
+
+When API failures occur, users receive safe, generic error messages:
+
+**English:**
+```
+There was an error communicating with the external panel. The administrators have been notified.
+```
+
+**Persian:**
+```
+خطایی در ارتباط با پنل خارجی رخ داد. مدیران مطلع شده‌اند.
+```
+
+### Usage in Custom Code
+
+You can use the `ApiFailureLogger` directly in your code:
+
+```php
+<?php
+require_once 'ApiFailureLogger.php';
+
+// Log an API failure
+ApiFailureLogger::log([
+    'method' => 'POST',
+    'url' => 'https://panel.example.com/api/users',
+    'request_body' => ['username' => 'test'],
+    'http_status' => 500,
+    'response_body' => '{"error": "Internal Server Error"}',
+    'exception' => $e,  // Optional Throwable
+    'panel_name' => 'my_panel',
+    'user_id' => 12345,
+    'context' => 'Creating user',
+]);
+
+// Get a safe error message for users
+$message = ApiFailureLogger::getGenericErrorMessage('marzban');
+// Or in Persian:
+$message = ApiFailureLogger::getGenericErrorMessagePersian('مرزبان');
+```
+
+### Disabling Admin Alerts
+
+To disable Telegram alerts (e.g., during maintenance):
+
+```php
+ApiFailureLogger::log($params, ['enable_admin_alerts' => false]);
+```
+
+### Adjusting Throttle Time
+
+To change the minimum time between alerts for the same endpoint:
+
+```php
+ApiFailureLogger::log($params, ['alert_throttle_seconds' => 300]); // 5 minutes
+```
